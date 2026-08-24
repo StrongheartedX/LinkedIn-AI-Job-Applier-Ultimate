@@ -1143,6 +1143,10 @@ class LinkedInEasyApplier(BaseEasyApplier):
                     ".fb-dash-form-element__label",
                     "[data-test-checkbox-form-title]",
                     ".jobs-easy-apply-form-section__group-title",
+                    # New LinkedIn SDUI markup has no legend/title element; the question
+                    # text is a plain <p> preceding the <fieldset> in the widened section,
+                    # so it's always the first <p> in document order.
+                    "p",
                 ]
 
                 for selector in question_selectors:
@@ -1206,6 +1210,18 @@ class LinkedInEasyApplier(BaseEasyApplier):
                             # Extract text that's not the question
                             if parent_text and parent_text != question_text:
                                 label_text = parent_text
+
+                    if not label_text:
+                        # New LinkedIn SDUI markup renders an empty <label> as a click
+                        # target; the visible option text instead lives on a sibling <p>
+                        # under the ancestor role="checkbox" wrapper
+                        role_ancestor = checkbox.locator(
+                            "xpath=ancestor::*[@role='checkbox'][1]"
+                        ).first
+                        if await role_ancestor.count() > 0:
+                            role_text = (await role_ancestor.text_content() or "").strip()
+                            if role_text and role_text != question_text:
+                                label_text = role_text
 
                     if label_text:
                         checkbox_options.append(label_text)
@@ -1319,11 +1335,23 @@ class LinkedInEasyApplier(BaseEasyApplier):
 
         except Exception as e:
             logger.warning(f"Failed to click checkbox safely: {e}")
+            # New LinkedIn SDUI markup draws the visible, clickable checkbox on the
+            # ancestor role="checkbox" wrapper; the native <input>/<label> are visually
+            # hidden and fail Playwright's actionability check, so try that next.
+            try:
+                role_ancestor = checkbox.locator("xpath=ancestor::*[@role='checkbox'][1]").first
+                if await role_ancestor.count() > 0:
+                    logger.debug("Clicking checkbox via role='checkbox' ancestor")
+                    await role_ancestor.click(timeout=1000)
+                    return
+            except Exception as e2:
+                logger.warning(f"Failed to click checkbox via role ancestor: {e2}")
+
             # Final fallback: try clicking the checkbox directly
             try:
                 await checkbox.click(timeout=1000)
-            except Exception as e2:
-                logger.error(f"All checkbox click attempts failed: {e2}")
+            except Exception as e3:
+                logger.error(f"All checkbox click attempts failed: {e3}")
                 await debug_capture(self.page, "checkbox_click_error")
 
     async def _is_resume_picker_radiogroup(self, section: Any) -> bool:
@@ -2143,7 +2171,7 @@ if __name__ == "__main__":
 
     def build_linkedin_job_url(job_url_or_id: str | None = None) -> str:
         """Build a LinkedIn job URL from a full URL, numeric ID, or default value."""
-        default_job_url = "https://www.linkedin.com/jobs/view/4450007059"
+        default_job_url = "https://www.linkedin.com/jobs/view/4147219629"
         if not job_url_or_id:
             return default_job_url
         job_url_or_id = job_url_or_id.strip()

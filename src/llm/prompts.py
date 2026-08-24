@@ -168,6 +168,7 @@ Here is a resume, a question about the resume, and available answer options. Cho
 - If you don't know which option to choose or every option is a default or placeholder - choose "No info"
 - The answer MUST be one of the provided options.
 - The answer MUST contain only ONE of the options.
+- If the question asks how you heard about the company/position (e.g. "How did you hear about us?"), choose a general option that doesn't require further specification (e.g. prefer "LinkedIn", "Company Website", "News/Media", "YouTube") instead of options that demand extra detail (e.g. "Referred by employee (name below)", "Campus Recruiting (please specify)", "Other (please specify)") or "No info".
 - Remember that the gender is {gender}.
 - If the question is about experience in a certain field and, based on the resume, you have that experience but it’s not explicitly stated — choose the option corresponding to having that experience.
 - If it's looks like the question is related to the previous questions (e.g. "If yes/no, who/when/where?"), use the information from the previous questions.
@@ -216,6 +217,7 @@ Here is a resume, a question about the resume, and available answer options. Cho
 - NEVER select a default or placeholder option, such as: "Select an option", "Choose an option", "Empty response", " ", "My option", "Your option", etc.
 - If you don't know which option to choose or every option is a default or placeholder - choose "No info"
 - The answer may include one or more options.
+- If the question asks how you heard about the company/position (e.g. "How did you hear about us?"), choose a general option that doesn't require further specification (e.g. prefer "LinkedIn", "Company Website", "News/Media", "YouTube") instead of options that demand extra detail (e.g. "Referred by employee (name below)", "Campus Recruiting (please specify)", "Other (please specify)") or "No info".
 - Remember that the gender is {gender}.
 - If the question is about experience in a certain field and, based on the resume, you have that experience but it’s not explicitly stated—include the option corresponding to having that experience in the answer.
 - Return answers as a string separated by semicolons.
