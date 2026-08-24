@@ -1704,9 +1704,23 @@ class LinkedInEasyApplier(BaseEasyApplier):
                     question_text = ""
 
                 try:
-                    current_selection = (
-                        await dropdown.locator("option:checked").first.text_content() or ""
-                    ).strip()
+                    selection_info = await dropdown.evaluate(
+                        """el => {
+                            const opt = el.options[el.selectedIndex];
+                            if (!opt) return null;
+                            return {
+                                text: (opt.textContent || '').trim(),
+                                index: el.selectedIndex,
+                                hasSelectedAttr: opt.hasAttribute('selected'),
+                            };
+                        }"""
+                    )
+                    if selection_info and (
+                        selection_info["index"] > 0 or selection_info["hasSelectedAttr"]
+                    ):
+                        current_selection = selection_info["text"]
+                    else:
+                        current_selection = ""
                 except Exception:
                     current_selection = ""
                 logger.debug(f"Current selection: {current_selection}")
