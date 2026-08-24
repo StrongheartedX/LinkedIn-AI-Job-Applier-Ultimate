@@ -245,11 +245,15 @@ class LinkedInEasyApplier(BaseEasyApplier):
                 return None
 
             easy_apply_selectors = [
+                '//button[contains(@aria-label, "Easy Apply")]',
                 '//a[contains(., "Apply")]',
             ]
 
+            easy_apply_buttons = []
             for selector in easy_apply_selectors:
                 easy_apply_buttons = await find_elements_safely(self.page, selector, "xpath")
+                if easy_apply_buttons:
+                    break
 
             for button in easy_apply_buttons:
                 try:
@@ -304,9 +308,25 @@ class LinkedInEasyApplier(BaseEasyApplier):
     async def _find_next_or_submit_button(self) -> Any:
         """Find 'Next' or 'Submit' or 'Review' button (async)"""
         logger.info("Finding 'Next' or 'Submit' or 'Review' button")
-        # Find all elements with class="artdeco-button__text" and filter by specific text
-        elements = await find_elements_safely(self.page, ".artdeco-button__text", "css")
         target_texts = ["next", "review", "submit application"]
+
+        # Scope the search to the Easy Apply modal so page buttons with the
+        # same text (e.g. search result pagination) aren't matched instead
+        modal_selectors = [
+            '[data-testid="dialog-content"]',  # New SDUI modal container
+            ".jobs-easy-apply-modal__content",
+            ".artdeco-modal__content",
+        ]
+        scope = self.page
+        for selector in modal_selectors:
+            modal_content = await find_element_safely(self.page, selector, "css")
+            if modal_content is not None:
+                scope = modal_content
+                break
+
+        # New SDUI markup renders plain <button> elements with hashed classes;
+        # legacy markup exposes the label via the .artdeco-button__text span
+        elements = await find_elements_safely(scope, "button, .artdeco-button__text", "css")
 
         # Filter elements by text content
         next_button = None
@@ -350,6 +370,16 @@ class LinkedInEasyApplier(BaseEasyApplier):
                 "label[for='follow-company-checkbox']",
                 "css",
             )
+            if follow_checkbox is None:
+                # New LinkedIn SDUI markup drops the static id and renders an empty
+                # <label>; the toggle is a role="checkbox" div next to "Follow <Company>
+                # to stay up to date..." text, checked by default
+                follow_checkbox = await find_element_safely(
+                    self.page,
+                    "//*[@role='checkbox'][@aria-checked='true']"
+                    "[contains(translate(., 'FOLLOW', 'follow'), 'follow')]",
+                    "xpath",
+                )
             if follow_checkbox:
                 await follow_checkbox.click(timeout=1000)
 
@@ -426,6 +456,49 @@ class LinkedInEasyApplier(BaseEasyApplier):
             logger.error(f"Failed to save application process: {e}")
             await debug_capture(self.page, "save_application_error")
 
+    async def _widen_to_question_container(self, fieldset: Any) -> Any:
+        """Expand a radio/checkbox <fieldset> to include its question text.
+
+        LinkedIn's new SDUI markup renders the question label as a sibling of the
+        <fieldset>, not a descendant, so the fieldset's own text_content() only
+        contains the option labels. Climb ancestors until one actually adds text
+        beyond the fieldset's own content (i.e. contains the question label).
+        """
+        container = fieldset
+        try:
+            own_text = (await container.text_content() or "").strip()
+            for _ in range(4):
+                parent = container.locator("xpath=..").first
+                if await parent.count() == 0:
+                    break
+                parent_text = (await parent.text_content() or "").strip()
+                if parent_text != own_text:
+                    return parent
+                container = parent
+        except Exception as e:
+            logger.debug(f"Failed widening fieldset to question container: {e}")
+        return container
+
+    async def _widen_to_text_input_container(self, text_field: Any) -> Any:
+        """Expand a standalone text/textarea input to include its question text.
+
+        LinkedIn's newer SDUI markup renders some text questions with the question
+        text in a sibling <p> instead of a <label>, so climb ancestors until one
+        contains a <p> element (the question text), capped to avoid over-widening.
+        """
+        container = text_field
+        try:
+            for _ in range(5):
+                parent = container.locator("xpath=..").first
+                if await parent.count() == 0:
+                    break
+                container = parent
+                if await container.locator("p").count() > 0:
+                    break
+        except Exception as e:
+            logger.debug(f"Failed widening text input to question container: {e}")
+        return container
+
     async def _fill_up(self, job: Job) -> None:
         """Fill up form sections (async)"""
         logger.info(f"Filling up form sections for job: {job.job_title}")
@@ -439,7 +512,7 @@ class LinkedInEasyApplier(BaseEasyApplier):
             try:
                 # Wait up to 10 seconds for the modal to appear
                 await self.page.wait_for_selector(
-                    ".jobs-easy-apply-modal__content", state="visible", timeout=10000
+                    '[data-testid="dialog-content"]', state="visible", timeout=10000
                 )
                 logger.debug("Modal selector found via wait_for_selector")
             except Exception as e:
@@ -447,6 +520,7 @@ class LinkedInEasyApplier(BaseEasyApplier):
 
             # Try multiple selectors to find the modal content
             modal_selectors = [
+                '[data-testid="dialog-content"]',  # New SDUI modal container
                 ".jobs-easy-apply-modal__content",  # CSS selector
                 ".artdeco-modal__content",  # Fallback CSS
                 "//*[contains(@class, 'jobs-easy-apply-modal__content')]",  # XPath
@@ -483,6 +557,59 @@ class LinkedInEasyApplier(BaseEasyApplier):
                 ).all()
                 logger.debug(
                     f"Fallback: Found {len(form_elements)} form elements with old selector"
+                )
+
+            if not form_elements:
+                # LinkedIn's newer SDUI markup uses hashed, non-semantic CSS classes,
+                # so fall back to structural detection. Radio/checkbox groups (e.g. the
+                # resume picker) are wrapped in a <fieldset> and must stay one section so
+                # all options are visible together; every other <label> not inside such a
+                # fieldset is treated as its own single-field section via its parent element
+                fieldsets = await modal_content.locator("fieldset").all()
+                form_elements = [await self._widen_to_question_container(fs) for fs in fieldsets]
+
+                labels = await modal_content.locator("label").all()
+                labeled_input_ids: set = set()
+                for label in labels:
+                    try:
+                        in_fieldset = await label.locator("xpath=ancestor::fieldset").count() > 0
+                    except Exception:
+                        in_fieldset = False
+                    if in_fieldset:
+                        continue
+                    label_container = label.locator("xpath=..").first
+                    form_elements.append(label_container)
+                    try:
+                        for inp in await label_container.locator(
+                            "input[type='text'], input[type='tel'], textarea"
+                        ).all():
+                            input_id = await inp.get_attribute("id")
+                            if input_id:
+                                labeled_input_ids.add(input_id)
+                    except Exception:
+                        pass
+
+                # LinkedIn's newer SDUI text-question markup has no <label> at all -
+                # the question text lives in a sibling <p>, associated to the <input>
+                # only via aria-label/aria-describedby. Pick up any text/textarea
+                # input still missed by the fieldset and label passes above.
+                orphan_inputs = await modal_content.locator(
+                    "input[type='text'], input[type='tel'], textarea"
+                ).all()
+                for inp in orphan_inputs:
+                    try:
+                        if await inp.locator("xpath=ancestor::fieldset").count() > 0:
+                            continue
+                    except Exception:
+                        pass
+                    input_id = await inp.get_attribute("id")
+                    if input_id and input_id in labeled_input_ids:
+                        continue
+                    form_elements.append(await self._widen_to_text_input_container(inp))
+
+                logger.debug(
+                    f"Structural fallback: Found {len(form_elements)} form elements "
+                    f"({len(fieldsets)} fieldsets)"
                 )
 
             # Process regular form elements
@@ -1199,6 +1326,27 @@ class LinkedInEasyApplier(BaseEasyApplier):
                 logger.error(f"All checkbox click attempts failed: {e2}")
                 await debug_capture(self.page, "checkbox_click_error")
 
+    async def _is_resume_picker_radiogroup(self, section: Any) -> bool:
+        """Detect LinkedIn's "select a resume" radiogroup among generic radio questions.
+
+        It lists every previously uploaded resume (filename + upload date) as a radio
+        option with one already checked, so its option labels are just resume filenames
+        rather than an answerable question. Concatenating all of them as question text
+        (potentially years of history) produces garbage that can't be answered by cache
+        or LLM, so this must be detected and skipped before that text is ever built.
+        """
+        try:
+            radiogroup = section.locator("[role='radiogroup']").first
+            if await radiogroup.count() == 0:
+                return False
+            labels = await radiogroup.locator("[role='radio'][aria-label]").evaluate_all(
+                "els => els.map(e => (e.getAttribute('aria-label') || '').toLowerCase())"
+            )
+        except Exception:
+            return False
+        resume_extensions = (".pdf", ".doc", ".docx")
+        return bool(labels) and all(label.endswith(resume_extensions) for label in labels)
+
     async def _find_and_handle_radio_question(self, section: Any) -> bool:
         """Handle radio button questions (async)"""
         # Look for radio buttons in the new LinkedIn form structure
@@ -1225,6 +1373,13 @@ class LinkedInEasyApplier(BaseEasyApplier):
         radios = list(radios.values())
 
         if radios:
+            if await self._is_resume_picker_radiogroup(section):
+                logger.info(
+                    "Detected resume-selection radio group; keeping LinkedIn's default "
+                    "selected resume"
+                )
+                return True
+
             # Try to find the question text
             try:
                 question_text = (await section.text_content() or "").lower().strip()
@@ -1247,7 +1402,14 @@ class LinkedInEasyApplier(BaseEasyApplier):
                         if (e.id && !seen.has(e.id)) {
                             seen.add(e.id);
                             const lbl = document.querySelector('label[for="' + e.id + '"]');
-                            const text = (lbl?.textContent || '').trim().toLowerCase();
+                            let text = (lbl?.textContent || '').trim();
+                            if (!text) {
+                                // New LinkedIn SDUI markup renders an empty <label> as a
+                                // click target; the visible option text lives on the
+                                // nearest ancestor's aria-label instead
+                                text = (e.closest('[aria-label]')?.getAttribute('aria-label') || '').trim();
+                            }
+                            text = text.toLowerCase();
                             if (text) acc.push(text);
                         }
                         return acc;
@@ -1291,6 +1453,7 @@ class LinkedInEasyApplier(BaseEasyApplier):
         # Try different selectors for text inputs
         selectors = [
             "input[type='text']",
+            "input[type='tel']",
             "textarea",
             ".artdeco-text-input--input",
         ]
@@ -1657,7 +1820,16 @@ class LinkedInEasyApplier(BaseEasyApplier):
                 radio_id = await radio.get_attribute("id")
                 if radio_id:
                     label = section.locator(f"label[for='{radio_id}']").first
-                    radio_text = (await label.text_content() or "").strip().lower()
+                    radio_text = (await label.text_content() or "").strip()
+                    if not radio_text:
+                        # New LinkedIn SDUI markup renders an empty <label>; the visible
+                        # option text lives on the nearest ancestor's aria-label instead
+                        radio_text = (
+                            await radio.evaluate(
+                                "e => (e.closest('[aria-label]')?.getAttribute('aria-label') || '')"
+                            )
+                        ).strip()
+                    radio_text = radio_text.lower()
 
                 logger.debug(f"Radio button text extracted: '{radio_text}'")
 
@@ -1971,7 +2143,7 @@ if __name__ == "__main__":
 
     def build_linkedin_job_url(job_url_or_id: str | None = None) -> str:
         """Build a LinkedIn job URL from a full URL, numeric ID, or default value."""
-        default_job_url = "https://www.linkedin.com/jobs/view/4410066193"
+        default_job_url = "https://www.linkedin.com/jobs/view/4450007059"
         if not job_url_or_id:
             return default_job_url
         job_url_or_id = job_url_or_id.strip()
@@ -2084,7 +2256,7 @@ if __name__ == "__main__":
                 Path(OUTPUT_DIR_LINKEDIN) / "answers.yaml",
                 RESUME_DIR,
                 COVER_LETTER_DIR,
-                TEST_MODE,
+                test_mode=True,  # !
             )
             if easy_applier.ready_made_resume_path is None:
                 resume_generator_manager.choose_style()

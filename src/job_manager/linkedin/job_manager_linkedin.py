@@ -20,18 +20,7 @@ from config.constants import COVER_LETTER_DIR, OUTPUT_DIR_LINKEDIN, RESUME_DIR, 
 from config.logger_config import logger
 from src.dashboard.runtime import StopRequested, emit_event
 from src.job_manager.job_manager import BaseJobManager
-from src.utils.runtime_control import ShutdownState, runtime_controller
-
-try:
-    from config.app_config import IS_PREMIUM
-except ImportError:
-    IS_PREMIUM = False
-
-if IS_PREMIUM:
-    from src.job_manager.linkedin.easy_applier_linkedin_premium import LinkedInEasyApplier
-else:
-    from src.job_manager.linkedin.easy_applier_linkedin import LinkedInEasyApplier
-
+from src.job_manager.linkedin.easy_applier_linkedin import LinkedInEasyApplier
 from src.pydantic_models.job_models import Job
 from src.utils.browser_utils import (
     debug_capture,
@@ -44,6 +33,7 @@ from src.utils.browser_utils import (
     safe_click,
     scroll_slowly,
 )
+from src.utils.runtime_control import ShutdownState, runtime_controller
 from src.utils.utils import async_pause, load_yaml_file, sanitize_text
 
 search_config = load_yaml_file(SEARCH_CONFIG_FILE)
