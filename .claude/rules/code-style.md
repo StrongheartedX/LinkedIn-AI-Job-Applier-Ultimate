@@ -27,3 +27,12 @@ All config and data loaded through models in `src/pydantic_models/`:
 - `Job`, `JobManagerCache`, `Question` — job application data
 - `ResumeStructure` — resume parsing
 - `LLMCall` — LLM cost tracking
+
+### Development Rules
+- Use the centralized logger from `config/logger_config.py`
+- Catch specific exceptions, not bare `except:`
+- Log useful context like job URL, selector, field name, or current step
+- Continue processing other jobs when one job fails unless the failure is global
+- Keep prompts centralized in `src/llm/prompts.py`
+- Validate config and structured data with Pydantic models in `src/pydantic_models/`
+- Keep imports ordered as standard library, third-party, then local imports
